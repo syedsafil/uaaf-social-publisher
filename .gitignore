@@ -1,12 +1,22 @@
-﻿.env
+# Environment & secrets
+.env
 .env.*
 !.env.example
+
+# Python cache & logs
 __pycache__/
 *.py[cod]
+*.log
+
+# Databases & local output
 output/
+*.db
+*.sqlite3
+
+# General media ignore (whitelist documentation assets)
 *.mp4
 *.png
 *.jpg
-*.db
-*.sqlite3
-*.log
+!media/**
+!examples/sample-vertical.mp4
+!uaaf-social-preview.jpg
