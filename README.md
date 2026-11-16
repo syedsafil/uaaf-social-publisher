@@ -37,7 +37,7 @@ The publishing code accepts a clip and its post text, dispatches to the selected
 | Instagram Reels | Video publishing adapter | Live publishing pending |
 | Facebook Reels | Video publishing adapter | Live publishing pending |
 | TikTok | Content posting adapter | Live publishing pending |
-| YouTube Shorts | Video uploading adapter and local frame/duration check | Local check reproduced. Live upload pending. |
+| YouTube Shorts | Video uploading adapter and local frame/duration check | [Live publish verified](https://www.youtube.com/shorts/bjLGjKSNwJg) · Local check reproduced |
 | X | Video publishing adapter | Live publishing pending |
 
 See the [publishing code](python_agents/publish/publish_all.py) and the [environment template](.env.example) for integration entry points. Publishing requires the appropriate accounts, credentials and API access for each channel. Keep personal credentials out of issues and screenshots.
