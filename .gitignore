@@ -1,0 +1,12 @@
+﻿.env
+.env.*
+!.env.example
+__pycache__/
+*.py[cod]
+output/
+*.mp4
+*.png
+*.jpg
+*.db
+*.sqlite3
+*.log
