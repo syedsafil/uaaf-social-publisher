@@ -55,7 +55,8 @@ def main():
         print("1. Open https://developers.google.com/oauthplayground")
         print("2. Click top-right gear [Settings] -> Check 'Use your own OAuth credentials'")
         print(f"   Client ID: {Config.YOUTUBE_CLIENT_ID}")
-        print(f"   Client Secret: {Config.YOUTUBE_CLIENT_SECRET}")
+        sec_masked = f"{Config.YOUTUBE_CLIENT_SECRET[:4]}...[REDACTED]" if Config.YOUTUBE_CLIENT_SECRET else "[NOT SET]"
+        print(f"   Client Secret: {sec_masked}")
         print("3. Select 'YouTube Data API v3 -> https://www.googleapis.com/auth/youtube.upload'")
         print("4. Click Authorize APIs -> Exchange authorization code for tokens")
         print("=" * 60)
@@ -63,7 +64,8 @@ def main():
 
     if creds and creds.refresh_token:
         print("\n[OK] Authorization successful!", flush=True)
-        print(f"   Fresh Refresh Token: {creds.refresh_token}", flush=True)
+        tok_masked = f"{creds.refresh_token[:6]}...[REDACTED]"
+        print(f"   Fresh Refresh Token: {tok_masked}", flush=True)
 
         env_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), ".env")
         if os.path.exists(env_path):

@@ -7,10 +7,10 @@
 A self-hosted Python framework for publishing vertical short-form video across **YouTube Shorts, Instagram Reels, Facebook Reels, TikTok, and X (Twitter)**. Validate your video locally, verify credentials, and publish via native APIs.
 
 <p align="center">
-  <a href="https://github.com/syedsafil/uaaf-social-publisher/releases/download/v0.1.0/uaaf-starter.zip"><img src="https://img.shields.io/badge/Download_Starter_ZIP-CBB5FF?style=for-the-badge&amp;logo=github&amp;logoColor=17141F" height="40" alt="Download Starter ZIP"></a>
+  <a href="https://github.com/syedsafil/uaaf-social-publisher/releases/download/v0.1.1/uaaf-starter.zip"><img src="https://img.shields.io/badge/Download_Starter_ZIP-CBB5FF?style=for-the-badge&amp;logo=github&amp;logoColor=17141F" height="40" alt="Download Starter ZIP"></a>
 </p>
 
-[Video Check](#1-video-check) · [Credentials Audit](#2-credentials-audit) · [Publish Across 5 Platforms](#3-publish-across-5-platforms) · [Channel Setup](#4-channel-setup-guides) · [Platform Adapters](#5-platform-adapters) · [Issues](https://github.com/syedsafil/uaaf-social-publisher/issues)
+[Video Check](#1-video-check) · [Credentials Audit](#2-credentials-audit) · [Publish Across 5 Platforms](#3-publish-across-5-platforms) · [Channel Setup](#4-channel-setup-guides) · [Platform Adapters](#5-platform-adapters) · [Test Suite](#6-test-suite) · [Issues](https://github.com/syedsafil/uaaf-social-publisher/issues)
 
 ---
 
@@ -42,7 +42,11 @@ Output:
 Check your `.env` configuration across all 5 social destinations in one command:
 
 ```sh
+# Offline syntax check
 python -m examples.check_credentials
+
+# Live online API connectivity check (tests tokens against live APIs)
+python -m examples.check_credentials --online
 ```
 
 This inspects your local environment and provides immediate status for each platform along with setup hints for any missing keys.
@@ -60,6 +64,11 @@ Validate video geometry and credentials without sending any network upload reque
 python -m examples.publish_clip examples/sample-vertical.mp4 --platform all --dry-run
 ```
 
+### Privacy & Public Posting Safety
+* **Safe Defaults:** Private testing is the default (`--privacy private`).
+* **Privacy Constraints:** YouTube Shorts supports `private`. TikTok supports `private` (mapped to `SELF_ONLY`).
+* **Public Posting Safeguards:** Instagram, Facebook, and X APIs do not support private video uploads. To prevent accidental public leakage during developer testing, these platforms are automatically skipped in `--privacy private` mode unless `--allow-public` is explicitly provided.
+
 ### Single-Platform Publishing Commands
 
 * **YouTube Shorts** (Private test upload):
@@ -67,34 +76,34 @@ python -m examples.publish_clip examples/sample-vertical.mp4 --platform all --dr
   python -m examples.publish_clip examples/sample-vertical.mp4 --platform youtube --privacy private
   ```
 
-* **Instagram Reels** (Direct resumable binary stream via Meta Graph API):
-  ```sh
-  python -m examples.publish_clip examples/sample-vertical.mp4 --platform instagram
-  ```
-
-* **Facebook Reels** (Page Video API chunked container):
-  ```sh
-  python -m examples.publish_clip examples/sample-vertical.mp4 --platform facebook
-  ```
-
-* **TikTok** (Content Posting API v2 with Creator Inbox / Private fallback):
+* **TikTok** (Private upload via `SELF_ONLY` or Creator Inbox fallback):
   ```sh
   python -m examples.publish_clip examples/sample-vertical.mp4 --platform tiktok --privacy private
   ```
 
-* **X (Twitter)** (Media Upload API v2 chunked video endpoint):
+* **Instagram Reels** (Direct binary rupload via Meta Graph API v20):
   ```sh
-  python -m examples.publish_clip examples/sample-vertical.mp4 --platform x
+  python -m examples.publish_clip examples/sample-vertical.mp4 --platform instagram --allow-public
+  ```
+
+* **Facebook Reels** (Page Video API chunked container):
+  ```sh
+  python -m examples.publish_clip examples/sample-vertical.mp4 --platform facebook --allow-public
+  ```
+
+* **X (Twitter)** (Media Upload API v1.1 chunked + Tweet creation v2):
+  ```sh
+  python -m examples.publish_clip examples/sample-vertical.mp4 --platform x --allow-public
   ```
 
 ### Multi-Platform Simultaneous Dispatch
-Publish your clip to **all configured platforms in parallel**:
+Publish your clip to all configured platforms in parallel:
 
 ```sh
-python -m examples.publish_clip examples/sample-vertical.mp4 --platform all
+python -m examples.publish_clip examples/sample-vertical.mp4 --platform all --allow-public
 ```
 
-Expected Terminal Output:
+Terminal Output *(Example Output)*:
 ```text
 =================================================================
 UAAF MULTI-PLATFORM SOCIAL PUBLISHER
@@ -106,11 +115,11 @@ UAAF MULTI-PLATFORM SOCIAL PUBLISHER
    Eligible:   True
 
 [2/3] Checking credentials for target platform(s): youtube, instagram, facebook, tiktok, x
-   [READY] YOUTUBE    - CLIENT_ID=SET, REFRESH_TOKEN=SET
-   [READY] INSTAGRAM  - META_ACCESS_TOKEN=SET, IG_ACCOUNT_ID=SET
-   [READY] FACEBOOK   - META_ACCESS_TOKEN=SET, FB_PAGE_ID=SET
-   [READY] TIKTOK     - CLIENT_KEY=SET, TOKEN=SET
-   [READY] X          - API_KEY=SET, ACCESS_TOKEN=SET
+   [CONFIGURED]   YOUTUBE    - CLIENT_ID=SET, CLIENT_SECRET=SET, REFRESH_TOKEN=SET
+   [CONFIGURED]   INSTAGRAM  - META_ACCESS_TOKEN=SET, IG_ACCOUNT_ID=SET
+   [CONFIGURED]   FACEBOOK   - META_ACCESS_TOKEN=SET, FB_PAGE_ID=SET
+   [CONFIGURED]   TIKTOK     - CLIENT_KEY=SET, CLIENT_SECRET=SET, TOKEN=SET
+   [CONFIGURED]   X          - API_KEY=SET, API_SECRET=SET, ACCESS_TOKEN=SET, ACCESS_SECRET=SET
 
 [3/3] Initiating live publication...
 
@@ -120,7 +129,7 @@ PUBLICATION RESULTS (12.4s)
    [SUCCESS] YOUTUBE    -> https://www.youtube.com/shorts/bjLGjKSNwJg
    [SUCCESS] INSTAGRAM  -> https://www.instagram.com/reel/De9gFEnElFt/
    [SUCCESS] FACEBOOK   -> https://facebook.com/reel/1128395313101108/
-   [SUCCESS] TIKTOK     -> https://www.tiktok.com/@user/video/728910283
+   [INBOX]   TIKTOK     -> https://www.tiktok.com/@your_channel (Uploaded to Creator Inbox)
    [SUCCESS] X          -> https://x.com/user/status/17891238910
 =================================================================
 ```
@@ -133,7 +142,7 @@ Copy `.env.example` to `.env` and configure credentials for the channels you wan
 
 ### YouTube Shorts
 1. Enable **YouTube Data API v3** in [Google Cloud Console](https://console.cloud.google.com/).
-2. Create an **OAuth 2.0 Client ID** (Desktop Application).
+2. Create an **OAuth 2.0 Client ID** (Application type: *Desktop app*).
 3. Set `YOUTUBE_CLIENT_ID` and `YOUTUBE_CLIENT_SECRET` in `.env`.
 4. Run the 1-click token generator:
    ```sh
@@ -161,7 +170,7 @@ Copy `.env.example` to `.env` and configure credentials for the channels you wan
    ```
 
 ### X.com (Twitter)
-1. In the [X Developer Portal](https://developer.x.com/), generate OAuth 1.0a User Context keys (Read and Write).
+1. In the [X Developer Portal](https://developer.x.com/), generate OAuth 1.0a User Context keys (Read and Write) and API v2 tokens.
 2. Set in `.env`:
    ```env
    X_API_KEY="your_api_key"
@@ -174,15 +183,25 @@ Copy `.env.example` to `.env` and configure credentials for the channels you wan
 
 ## 5. Platform Adapters
 
-| Destination | Pipeline Architecture | Verification Link |
+| Destination | Pipeline Architecture | Verification Status |
 | :--- | :--- | :--- |
 | **YouTube Shorts** | Chunked Resumable Upload via Data API v3 | [Verified Live Short](https://www.youtube.com/shorts/bjLGjKSNwJg) |
-| **Instagram Reels** | Direct Binary Rupload via Meta Graph API v20 | [Verified Live Reel](https://www.instagram.com/reel/De9gFEnElFt/) |
-| **Facebook Reels** | Two-Phase Video Reels Upload via Page Video API | [Verified Live Reel](https://facebook.com/reel/1128395313101108/) |
-| **TikTok** | Direct Post & Creator Inbox Flow (API v2) | [Adapter Verified](https://www.tiktok.com) |
-| **X** | Chunked Media Upload v1.1 + Status Polling + Tweet v2 | [Adapter Verified](https://x.com) |
+| **Instagram Reels** | Direct Binary Rupload via Meta Graph API v20 | Implemented · Live test pending credentials |
+| **Facebook Reels** | Two-Phase Video Reels Upload via Page Video API | Implemented · Live test pending credentials |
+| **TikTok** | Direct Post & Creator Inbox Flow (API v2) | Implemented · Live test pending credentials |
+| **X** | Media Upload API v1.1 (chunked) + Tweet Creation API v2 | Implemented · Live test pending credentials |
 
 See [python_agents/publish/publish_all.py](python_agents/publish/publish_all.py) and [.env.example](.env.example) for entry points.
+
+---
+
+## 6. Test Suite
+
+Run the automated verification suite to test video geometry validation, credentials auditing, privacy constraints, status reporting, and scheduler retry queues:
+
+```sh
+python -m unittest tests/test_publishing_suite.py -v
+```
 
 ---
 

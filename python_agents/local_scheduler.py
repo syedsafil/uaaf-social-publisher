@@ -180,9 +180,25 @@ def check_due_videos():
         if s.get("status") in {"published", "already_published"} and s.get("video_path")
     }
 
+    now_utc = datetime.now(timezone.utc)
+
     for item in schedules:
         status = item.get("status")
-        # STRICT: Only process newly scheduled videos!
+
+        # 1. Check retry candidates (failed or partially_published with next_retry_at passed)
+        if status in {"failed", "partially_published"}:
+            next_retry_at = item.get("next_retry_at")
+            if next_retry_at:
+                try:
+                    retry_dt = datetime.fromisoformat(next_retry_at)
+                    if now_utc >= retry_dt:
+                        due.append(item)
+                        log.info(f"  → DUE FOR RETRY: '{item.get('title')}' (scheduled retry attempt {item.get('publish_attempts', 0) + 1})")
+                except Exception as e:
+                    log.warn(f"Invalid next_retry_at format for '{item.get('title')}': {next_retry_at} ({e})")
+            continue
+
+        # 2. Process newly scheduled items
         if status != "scheduled":
             continue
 

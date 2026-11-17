@@ -29,7 +29,7 @@ import asyncio
 import time
 import base64
 import mimetypes
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, List, Optional, Any
 from pathlib import Path
 
@@ -70,7 +70,7 @@ async def publish_to_all(
     Returns:
         Dict of {platform: {status, url, media_id, error?}}
     """
-    start = datetime.utcnow()
+    start = datetime.now(timezone.utc)
     log.info("=" * 60)
     log.info("MULTI-PLATFORM PUBLICATION STARTED")
     log.info(f"  Video: {video_path}")
@@ -84,30 +84,21 @@ async def publish_to_all(
     hashtag_str = " ".join(hashtags) if hashtags else ""
     full_caption = f"{caption}\n\n{hashtag_str}".strip()
 
-    # Upload to cloud storage first (required for Meta/TikTok which need public URLs)
-    # In production: upload to S3/R2 and get public URL
-    # For now: we'll use direct file upload where supported
-    cloud_url = await _upload_to_cloud(video_path)
-
-    # Auto-detect thumbnail image if not provided
-    if not thumbnail_path or not os.path.exists(thumbnail_path):
-        base, _ = os.path.splitext(video_path)
-        for ext in [".jpg", ".png", ".jpeg", "_thumb.jpg", "_thumbnail.jpg", "_thumb.png"]:
-            cand = base + ext
-            if os.path.exists(cand):
-                thumbnail_path = cand
-                log.info(f"  Auto-detected custom thumbnail: {thumbnail_path}")
-                break
-
     # ── Run selected or ALL publishers concurrently ──
-    all_tasks = [
-        ("instagram", _publish_instagram(video_path, full_caption, title)),
-        ("facebook", _publish_facebook(video_path, full_caption, title)),
-        ("tiktok", _publish_tiktok(video_path, full_caption, title, hashtags, privacy_level=kwargs.get("tiktok_privacy"))),
-        ("youtube", _publish_youtube(video_path, title, full_caption, hashtags, thumbnail_path, privacy_status=youtube_privacy or kwargs.get("privacy"))),
-        ("x", _publish_x(video_path, full_caption)),
-    ]
-    tasks = [t for t in all_tasks if not platforms or t[0] in platforms]
+    # Instantiate coroutines ONLY for requested platforms to prevent unawaited coroutine warnings
+    target_platforms = set(platforms) if platforms else {"instagram", "facebook", "tiktok", "youtube", "x"}
+    tasks = []
+
+    if "instagram" in target_platforms:
+        tasks.append(("instagram", _publish_instagram(video_path, full_caption, title)))
+    if "facebook" in target_platforms:
+        tasks.append(("facebook", _publish_facebook(video_path, full_caption, title)))
+    if "tiktok" in target_platforms:
+        tasks.append(("tiktok", _publish_tiktok(video_path, full_caption, title, hashtags, privacy_level=kwargs.get("tiktok_privacy"))))
+    if "youtube" in target_platforms:
+        tasks.append(("youtube", _publish_youtube(video_path, title, full_caption, hashtags, thumbnail_path, privacy_status=youtube_privacy or kwargs.get("privacy"))))
+    if "x" in target_platforms:
+        tasks.append(("x", _publish_x(video_path, full_caption)))
 
     results: Dict[str, Dict] = {}
 
@@ -122,7 +113,7 @@ async def publish_to_all(
 
     # ── Summary ──
     success_count = sum(1 for r in results.values() if r.get("status") == "success")
-    elapsed = (datetime.utcnow() - start).total_seconds()
+    elapsed = (datetime.now(timezone.utc) - start).total_seconds()
 
     log.info("=" * 60)
     log.info("PUBLICATION SUMMARY")
@@ -671,13 +662,14 @@ async def _publish_tiktok(
 
     if publish_id.startswith("v_inbox_file"):
         url = "https://www.tiktok.com/@your_channel"
-        log.info(f"  ✅ TikTok Reel uploaded to Creator Inbox: {url} (ID: {publish_id})")
+        log.info(f"  📥 TikTok video uploaded to Creator Inbox: {url} (ID: {publish_id})")
         return {
-            "status": "success",
+            "status": "uploaded_to_inbox",
             "platform": "tiktok",
             "url": url,
             "media_id": publish_id,
             "inbox": True,
+            "message": "Uploaded to TikTok Creator Inbox. Open TikTok app to approve and post.",
         }
 
     # ── Step 3: Poll publication status for direct publish ──
@@ -709,11 +701,13 @@ async def _publish_tiktok(
             elif pub_status == "FAILED":
                 raise RuntimeError(f"TikTok publication failed: {status_data}")
 
+    log.warn(f"  ⏳ TikTok publication status polling timed out for publish_id: {publish_id}")
     return {
-        "status": "success",
+        "status": "pending",
         "platform": "tiktok",
         "url": "https://www.tiktok.com/@your_channel",
         "media_id": publish_id,
+        "message": "Upload accepted by TikTok, but server processing is still pending.",
     }
 
 # ═══════════════════════════════════════════════════════════════
@@ -926,15 +920,26 @@ async def _publish_x(video_path: str, caption: str) -> Dict:
 
     # Wait for processing
     log.info("  X.com: waiting for media processing...")
+    media_ready = False
     for attempt in range(30):
         await asyncio.sleep(5)
         status = api.get_media_upload_status(media.media_id_string)
         info = getattr(status, "processing_info", None)
         if not info or info.get("state") == "succeeded":
+            media_ready = True
             break
         elif info.get("state") == "failed":
             raise RuntimeError(f"X.com media processing failed: {info}")
         log.info(f"  X.com: processing state: {info.get('state')} (attempt {attempt + 1}/30)")
+
+    if not media_ready:
+        log.warn("  X.com: media processing timed out after 30 checks")
+        return {
+            "status": "timed_out",
+            "platform": "x",
+            "media_id": media.media_id_string,
+            "error": "Media upload timed out: processing remained in pending state on X.com after 30 checks. Tweet creation aborted.",
+        }
 
     # ── Step 2: Create tweet with video ──
     # X.com caption limit: 280 chars
