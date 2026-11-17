@@ -11,6 +11,7 @@ import asyncio
 from datetime import datetime, date, timezone, timedelta
 from typing import List, Dict, Optional
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from config import Config
 from utils.logger import log
@@ -95,22 +96,33 @@ async def publish_scheduled_video(video_data: Dict):
 
 async def notify_generation_complete(creative_id, title, thumbnail_url, video_url, quality_score, prompt_dna):
     """When AI generates a video, send email for approval."""
-    from notify.email_approver import send_approval_email
+    try:
+        from notify.email_approver import send_approval_email
+    except ImportError:
+        try:
+            from python_agents.notify.email_approver import send_approval_email
+        except ImportError:
+            log.warn("Scheduler: notify.email_approver module not available, skipping approval email.")
+            return {"success": False, "error": "notify module not found"}
 
     log.info(f"Scheduler: AI video generated, sending approval email for '{title}'")
 
-    result = await send_approval_email(
-        creative_id=creative_id,
-        title=title,
-        niche="AI Generated",
-        hook="",
-        caption="",
-        thumbnail_url=thumbnail_url,
-        video_url=video_url,
-        quality_score=quality_score,
-        predicted_views=0,
-    )
-    return result
+    try:
+        result = await send_approval_email(
+            creative_id=creative_id,
+            title=title,
+            niche="AI Generated",
+            hook="",
+            caption="",
+            thumbnail_url=thumbnail_url,
+            video_url=video_url,
+            quality_score=quality_score,
+            predicted_views=0,
+        )
+        return result
+    except Exception as e:
+        log.warn(f"Scheduler: approval email dispatch failed: {e}")
+        return {"success": False, "error": str(e)}
 
 
 def _update_schedule_file(updated_item):

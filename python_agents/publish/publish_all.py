@@ -54,6 +54,7 @@ async def publish_to_all(
     platforms: Optional[List[str]] = None,
     comment_keyword: Optional[str] = None,
     video_id: Optional[str] = None,
+    youtube_privacy: Optional[str] = None,
     **kwargs,
 ) -> Dict[str, Dict]:
     """
@@ -103,7 +104,7 @@ async def publish_to_all(
         ("instagram", _publish_instagram(video_path, full_caption, title)),
         ("facebook", _publish_facebook(video_path, full_caption, title)),
         ("tiktok", _publish_tiktok(video_path, full_caption, title, hashtags)),
-        ("youtube", _publish_youtube(video_path, title, full_caption, hashtags, thumbnail_path)),
+        ("youtube", _publish_youtube(video_path, title, full_caption, hashtags, thumbnail_path, privacy_status=youtube_privacy or kwargs.get("privacy"))),
         ("x", _publish_x(video_path, full_caption)),
     ]
     tasks = [t for t in all_tasks if not platforms or t[0] in platforms]
@@ -715,6 +716,7 @@ async def _publish_youtube(
     caption: str,
     hashtags: List[str],
     thumbnail_path: Optional[str] = None,
+    privacy_status: Optional[str] = None,
 ) -> Dict:
     """
     Publish to YouTube (Supports both Shorts and Long 16:9 videos) via Data API v3.
@@ -792,6 +794,16 @@ async def _publish_youtube(
     else:
         description = f"{caption}\n\n{' '.join(hashtags)}".strip()
 
+    # Determine privacy status (defaults to Config.YOUTUBE_PRIVACY_STATUS or 'private' for test safety)
+    resolved_privacy = (
+        privacy_status
+        or getattr(Config, "YOUTUBE_PRIVACY_STATUS", None)
+        or os.getenv("YOUTUBE_PRIVACY_STATUS")
+        or "private"
+    ).lower()
+    if resolved_privacy not in ["private", "unlisted", "public"]:
+        resolved_privacy = "private"
+
     body = {
         "snippet": {
             "title": title[:100],  # YouTube title limit
@@ -802,7 +814,7 @@ async def _publish_youtube(
             "defaultAudioLanguage": "en",
         },
         "status": {
-            "privacyStatus": "public",
+            "privacyStatus": resolved_privacy,
             "selfDeclaredMadeForKids": False,
             "embeddable": True,
             "license": "youtube",
@@ -859,6 +871,7 @@ async def _publish_youtube(
         "url": video_url,
         "media_id": video_id,
         "is_short": is_short,
+        "privacy": resolved_privacy,
     }
 
 

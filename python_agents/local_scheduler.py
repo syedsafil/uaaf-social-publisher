@@ -350,9 +350,9 @@ async def publish_video_locally(video_data):
         log.info("")
         log.info("✅ SIMULATION COMPLETE")
 
-        video_data["status"] = "published_simulated"
-        video_data["published_at"] = datetime.now(timezone.utc).isoformat()
-        return {"status": "simulated", "video_data": video_data}
+        video_data["status"] = "credentials_missing"
+        video_data["simulated_at"] = datetime.now(timezone.utc).isoformat()
+        return {"status": "credentials_missing", "error": "No platform credentials configured in .env", "video_data": video_data}
 
     # REAL PUBLISH. On a retry, only failed platforms are attempted again so
     # already-live posts are never duplicated.
@@ -380,30 +380,51 @@ async def publish_video_locally(video_data):
         video_data["skipped_platforms"] = skipped
         video_data["publish_attempts"] = int(video_data.get("publish_attempts", 0)) + 1
 
-        # PERMANENT: Once a video is published, mark it "published" so it NEVER runs or retries again
-        video_data["status"] = "published"
-        video_data.pop("failed_platforms", None)
-        video_data.pop("next_retry_at", None)
+        # Determine status based on actual platform results
+        if failed and not succeeded:
+            video_data["status"] = "failed"
+            video_data["failed_platforms"] = failed
+            if video_data["publish_attempts"] < 3:
+                retry_time = (datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat()
+                video_data["next_retry_at"] = retry_time
+                log.warn(f"❌ Publication failed for: {failed}. Scheduled retry at {retry_time} (attempt {video_data['publish_attempts']}/3)")
+            else:
+                video_data["status"] = "permanently_failed"
+                video_data.pop("next_retry_at", None)
+                log.error(f"❌ Max attempts reached for: {failed}. Marked as permanently_failed.")
+        elif failed and succeeded:
+            video_data["status"] = "partially_published"
+            video_data["failed_platforms"] = failed
+            log.warn(f"⚠️ Partially published: {succeeded} succeeded, {failed} failed")
+        elif succeeded:
+            video_data["status"] = "published"
+            video_data.pop("failed_platforms", None)
+            video_data.pop("next_retry_at", None)
+            log.info(f"✅ Successfully published on all platforms: {succeeded}")
+        else:
+            video_data["status"] = "failed"
+            video_data["failed_platforms"] = ["unknown"]
 
         # Email notification
         try:
             from notify.email_approver import send_approval_email
-            await send_approval_email(
-                creative_id=video_data.get("id", "local"),
-                title=f"PUBLISHED: {title}",
-                niche="User Upload",
-                hook=video_data.get("hook", ""),
-                caption=caption,
-                thumbnail_url="",
-                video_url=video_path,
-                quality_score=100,
-                predicted_views=0,
-            )
-            log.info("📧 Email sent!")
+            if Config.RESEND_API_KEY and Config.CHAIRMAN_EMAIL:
+                await send_approval_email(
+                    creative_id=video_data.get("id", "local"),
+                    title=f"{video_data['status'].upper()}: {title}",
+                    niche="User Upload",
+                    hook=video_data.get("hook", ""),
+                    caption=caption,
+                    thumbnail_url="",
+                    video_url=video_path,
+                    quality_score=100 if not failed else 50,
+                    predicted_views=0,
+                )
+                log.info("📧 Email notification sent!")
         except Exception as e:
-            log.warn(f"Email failed: {e}")
+            log.warn(f"Email notification skipped: {e}")
 
-        log.info(f"✅ Publication finished: {len(succeeded)} live, {len(failed)} failed, {len(skipped)} skipped")
+        log.info(f"Publication result: status={video_data['status']} ({len(succeeded)} live, {len(failed)} failed, {len(skipped)} skipped)")
         return {"status": video_data["status"], "results": merged_results}
 
     except Exception as e:

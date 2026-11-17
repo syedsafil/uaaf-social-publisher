@@ -61,13 +61,18 @@ class Config:
     YOUTUBE_CLIENT_SECRET = os.getenv("YOUTUBE_CLIENT_SECRET", "")
     YOUTUBE_REFRESH_TOKEN = os.getenv("YOUTUBE_REFRESH_TOKEN", "")
     YOUTUBE_CHANNEL_ID = os.getenv("YOUTUBE_CHANNEL_ID", "")
+    YOUTUBE_PRIVACY_STATUS = os.getenv("YOUTUBE_PRIVACY_STATUS", "private")
 
-    # ── X.com ──
-    X_API_KEY = os.getenv("X_API_KEY", "")
-    X_API_SECRET = os.getenv("X_API_SECRET", "")
-    X_ACCESS_TOKEN = os.getenv("X_ACCESS_TOKEN", "")
-    X_ACCESS_TOKEN_SECRET = os.getenv("X_ACCESS_TOKEN_SECRET", "")
-    X_BEARER_TOKEN = os.getenv("X_BEARER_TOKEN", "")
+    # ── X.com / Twitter ──
+    X_API_KEY = os.getenv("X_API_KEY", "") or os.getenv("TWITTER_API_KEY", "")
+    X_API_SECRET = os.getenv("X_API_SECRET", "") or os.getenv("TWITTER_API_SECRET", "")
+    X_ACCESS_TOKEN = os.getenv("X_ACCESS_TOKEN", "") or os.getenv("TWITTER_ACCESS_TOKEN", "")
+    X_ACCESS_TOKEN_SECRET = (
+        os.getenv("X_ACCESS_TOKEN_SECRET", "")
+        or os.getenv("TWITTER_ACCESS_SECRET", "")
+        or os.getenv("TWITTER_ACCESS_TOKEN_SECRET", "")
+    )
+    X_BEARER_TOKEN = os.getenv("X_BEARER_TOKEN", "") or os.getenv("TWITTER_BEARER_TOKEN", "")
 
     # ── LinkedIn ──
     LINKEDIN_ACCESS_TOKEN = os.getenv("LINKEDIN_ACCESS_TOKEN", "")
