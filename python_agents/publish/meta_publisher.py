@@ -1,105 +1,47 @@
 """
-UAAF Meta Publisher — Instagram + Facebook Reels via Meta Graph API.
-Real API integration, not mock.
+UAAF Meta Publisher — Instagram & Facebook Reels via Meta Graph API v20.
+Production-grade direct binary chunked rupload pipeline.
 
-Flow:
-1. Upload video binary to Meta's container
-2. Wait for processing (status = IN_PROGRESS → FINISHED)
-3. Publish as Reel with caption + cover image
-
-Requires: META_ACCESS_TOKEN, META_IG_BUSINESS_ACCOUNT_ID, META_FB_PAGE_ID
+Requires:
+  - META_ACCESS_TOKEN (System User or Long-Lived User Token)
+  - META_IG_BUSINESS_ACCOUNT_ID (Instagram Business or Creator Account ID)
+  - META_FB_PAGE_ID (Facebook Page ID)
 """
-import httpx
-import asyncio
 import os
+import sys
+import httpx
+from typing import Dict, Optional
+
+# Ensure project root in sys.path
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from config import Config
 from utils.logger import log
 
-GRAPH_API_BASE = "https://graph.facebook.com/v19.0"
+GRAPH_API_BASE = "https://graph.facebook.com/v20.0"
 
 
-async def publish_instagram(video_path: str, caption: str, title: str) -> dict:
+async def publish_instagram(video_path: str, caption: str, title: str = "") -> Dict:
     """
-    Publish a Reel to Instagram via Meta Graph API.
-    Requires: IG Business Account + long-lived access token.
+    Publish a Reel to Instagram via Meta Graph API using direct resumable binary upload.
+    Delegates to the verified self-healing engine in publish_all.
     """
-    log.info(f"Instagram: starting upload ({os.path.getsize(video_path) / 1024 / 1024:.1f} MB)")
-
-    ig_id = Config.META_IG_BUSINESS_ACCOUNT_ID
-    token = Config.META_ACCESS_TOKEN
-
-    # Step 1: Create media container
-    log.info("  Instagram: creating media container...")
-    container_resp = await _graph_post(
-        f"/{ig_id}/media",
-        {
-            "media_type": "REELS",
-            "video_url": "",  # Would be cloud URL in production
-            "caption": caption,
-            "access_token": token,
-        }
-    )
-    creation_id = container_resp.get("id")
-
-    # Step 2: Publish the container
-    log.info("  Instagram: publishing...")
-    publish_resp = await _graph_post(
-        f"/{ig_id}/media_publish",
-        {
-            "creation_id": creation_id,
-            "access_token": token,
-        }
-    )
-
-    media_id = publish_resp.get("id")
-    permalink = f"https://instagram.com/reel/{media_id}"
-
-    log.info(f"  Instagram: published → {permalink}")
-    return {"url": permalink, "media_id": media_id, "platform": "instagram"}
+    from publish.publish_all import _publish_instagram
+    return await _publish_instagram(video_source=video_path, caption=caption, title=title)
 
 
-async def publish_facebook(video_path: str, caption: str, title: str) -> dict:
+async def publish_facebook(video_path: str, caption: str, title: str = "") -> Dict:
     """
-    Publish a Reel to Facebook via Meta Graph API.
-    Requires: FB Page ID + page access token.
+    Publish a Reel to Facebook Page via Meta Graph API using two-phase chunked upload.
+    Delegates to the verified engine in publish_all.
     """
-    log.info(f"Facebook: starting upload ({os.path.getsize(video_path) / 1024 / 1024:.1f} MB)")
-
-    page_id = Config.META_FB_PAGE_ID
-    token = Config.META_ACCESS_TOKEN
-
-    # Step 1: Create video post
-    log.info("  Facebook: creating reel post...")
-    resp = await _graph_post(
-        f"/{page_id}/video_reels",
-        {
-            "media_type": "reel",
-            "video_url": "",  # Would be cloud URL in production
-            "description": caption,
-            "access_token": token,
-        }
-    )
-
-    reel_id = resp.get("id")
-    permalink = f"https://facebook.com/reel/{reel_id}"
-
-    log.info(f"  Facebook: published → {permalink}")
-    return {"url": permalink, "media_id": reel_id, "platform": "facebook"}
-
-
-async def _graph_post(endpoint: str, data: dict) -> dict:
-    """Make a POST request to Meta Graph API."""
-    url = f"{GRAPH_API_BASE}{endpoint}"
-    async with httpx.AsyncClient(timeout=120) as client:
-        resp = await client.post(url, json=data)
-        resp.raise_for_status()
-        return resp.json()
+    from publish.publish_all import _publish_facebook
+    return await _publish_facebook(video_source=video_path, caption=caption, title=title)
 
 
 async def get_long_lived_token(short_lived_token: str) -> str:
     """
     Exchange a short-lived token for a long-lived (60-day) token.
-    Call this once during setup, then refresh before expiry.
+    Call this once during setup to persist in .env.
     """
     url = f"{GRAPH_API_BASE}/oauth/access_token"
     params = {
@@ -108,7 +50,58 @@ async def get_long_lived_token(short_lived_token: str) -> str:
         "client_secret": Config.META_APP_SECRET,
         "fb_exchange_token": short_lived_token,
     }
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(timeout=30) as client:
         resp = await client.get(url, params=params)
         resp.raise_for_status()
         return resp.json()["access_token"]
+
+
+async def verify_meta_credentials() -> Dict[str, any]:
+    """
+    Verify connectivity and permissions for configured Meta tokens.
+    """
+    token = Config.META_ACCESS_TOKEN
+    ig_id = Config.META_IG_BUSINESS_ACCOUNT_ID
+    page_id = Config.META_FB_PAGE_ID
+
+    results = {
+        "token_valid": False,
+        "instagram": {"connected": False, "username": None, "id": ig_id},
+        "facebook": {"connected": False, "page_name": None, "id": page_id},
+    }
+
+    if not token:
+        return results
+
+    async with httpx.AsyncClient(timeout=20) as client:
+        # Check token debug info
+        try:
+            r = await client.get(f"{GRAPH_API_BASE}/me", params={"access_token": token})
+            if r.status_code == 200:
+                results["token_valid"] = True
+        except Exception:
+            pass
+
+        # Check Instagram Account
+        if ig_id:
+            try:
+                r_ig = await client.get(f"{GRAPH_API_BASE}/{ig_id}", params={"fields": "username,name", "access_token": token})
+                if r_ig.status_code == 200:
+                    data = r_ig.json()
+                    results["instagram"]["connected"] = True
+                    results["instagram"]["username"] = data.get("username")
+            except Exception:
+                pass
+
+        # Check Facebook Page
+        if page_id:
+            try:
+                r_fb = await client.get(f"{GRAPH_API_BASE}/{page_id}", params={"fields": "name", "access_token": token})
+                if r_fb.status_code == 200:
+                    data = r_fb.json()
+                    results["facebook"]["connected"] = True
+                    results["facebook"]["page_name"] = data.get("name")
+            except Exception:
+                pass
+
+    return results

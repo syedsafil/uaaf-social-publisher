@@ -103,7 +103,7 @@ async def publish_to_all(
     all_tasks = [
         ("instagram", _publish_instagram(video_path, full_caption, title)),
         ("facebook", _publish_facebook(video_path, full_caption, title)),
-        ("tiktok", _publish_tiktok(video_path, full_caption, title, hashtags)),
+        ("tiktok", _publish_tiktok(video_path, full_caption, title, hashtags, privacy_level=kwargs.get("tiktok_privacy"))),
         ("youtube", _publish_youtube(video_path, title, full_caption, hashtags, thumbnail_path, privacy_status=youtube_privacy or kwargs.get("privacy"))),
         ("x", _publish_x(video_path, full_caption)),
     ]
@@ -581,6 +581,7 @@ async def _publish_tiktok(
     caption: str,
     title: str,
     hashtags: List[str],
+    privacy_level: Optional[str] = None,
 ) -> Dict:
     """
     Publish to TikTok via Content Posting API v2.
@@ -592,6 +593,15 @@ async def _publish_tiktok(
     token = await _get_fresh_tiktok_token()
     file_size = os.path.getsize(video_path)
 
+    # Determine TikTok privacy level (defaults to SELF_ONLY for test safety)
+    resolved_privacy = (
+        privacy_level
+        or os.getenv("TIKTOK_PRIVACY_LEVEL")
+        or ("SELF_ONLY" if os.getenv("TIKTOK_TEST_MODE", "true").lower() == "true" else "PUBLIC_TO_EVERYONE")
+    )
+    if resolved_privacy not in ["PUBLIC_TO_EVERYONE", "MUTUAL_FOLLOW_FRIENDS", "FOLLOWER_OF_CREATOR", "SELF_ONLY"]:
+        resolved_privacy = "SELF_ONLY"
+
     init_url = "https://open.tiktokapis.com/v2/post/publish/video/init/"
     headers = {
         "Authorization": f"Bearer {token}",
@@ -601,7 +611,7 @@ async def _publish_tiktok(
         "post_info": {
             "title": title[:150],
             "description": caption[:2200],
-            "privacy_level": "PUBLIC_TO_EVERYONE",
+            "privacy_level": resolved_privacy,
             "disable_duet": False,
             "disable_comment": False,
             "disable_stitch": False,
@@ -892,6 +902,10 @@ async def _publish_x(video_path: str, caption: str) -> Dict:
     """
     log.info("  🐦 X.com: starting publication...")
 
+    # Ensure credentials are present
+    if not (Config.X_API_KEY and Config.X_API_SECRET and Config.X_ACCESS_TOKEN and Config.X_ACCESS_TOKEN_SECRET):
+        raise RuntimeError("Missing X.com API credentials. Please set X_API_KEY, X_API_SECRET, X_ACCESS_TOKEN, and X_ACCESS_TOKEN_SECRET in .env")
+
     # Use OAuth 1.0a for media upload (v2 doesn't support media yet)
     import tweepy
 
@@ -913,13 +927,14 @@ async def _publish_x(video_path: str, caption: str) -> Dict:
     # Wait for processing
     log.info("  X.com: waiting for media processing...")
     for attempt in range(30):
-        await asyncio.sleep(10)
+        await asyncio.sleep(5)
         status = api.get_media_upload_status(media.media_id_string)
-        if status.processing_info["state"] == "succeeded":
+        info = getattr(status, "processing_info", None)
+        if not info or info.get("state") == "succeeded":
             break
-        elif status.processing_info["state"] == "failed":
-            raise RuntimeError(f"X.com media processing failed: {status.processing_info}")
-        log.info(f"  X.com: processing state: {status.processing_info['state']} (attempt {attempt + 1}/30)")
+        elif info.get("state") == "failed":
+            raise RuntimeError(f"X.com media processing failed: {info}")
+        log.info(f"  X.com: processing state: {info.get('state')} (attempt {attempt + 1}/30)")
 
     # ── Step 2: Create tweet with video ──
     # X.com caption limit: 280 chars
