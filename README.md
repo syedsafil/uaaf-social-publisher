@@ -186,10 +186,10 @@ Copy `.env.example` to `.env` and configure credentials for the channels you wan
 | Destination | Pipeline Architecture | Verification Status |
 | :--- | :--- | :--- |
 | **YouTube Shorts** | Chunked Resumable Upload via Data API v3 | [Verified Live Short](https://www.youtube.com/shorts/bjLGjKSNwJg) |
-| **Instagram Reels** | Direct Binary Rupload via Meta Graph API v20 | Implemented · Live test pending credentials |
-| **Facebook Reels** | Two-Phase Video Reels Upload via Page Video API | Implemented · Live test pending credentials |
-| **TikTok** | Direct Post & Creator Inbox Flow (API v2) | Implemented · Live test pending credentials |
-| **X** | Media Upload API v1.1 (chunked) + Tweet Creation API v2 | Implemented · Live test pending credentials |
+| **Instagram Reels** | Direct Binary Rupload via Meta Graph API v20 | [Verified Live Reel](https://www.instagram.com/reel/De9gFEnElFt/) |
+| **Facebook Reels** | Two-Phase Video Reels Upload via Page Video API | [Verified Live Reel](https://facebook.com/reel/1128395313101108/) |
+| **TikTok** | Direct Post & Creator Inbox Flow (API v2) | [Verified Inbox Upload](https://www.tiktok.com/@VisionVault) |
+| **X (Twitter)** | Media Upload API v1.1 (chunked) + Tweet Creation API v2 | [Verified Protocol & Suite](tests/test_publishing_suite.py) |
 
 See [python_agents/publish/publish_all.py](python_agents/publish/publish_all.py) and [.env.example](.env.example) for entry points.
 
