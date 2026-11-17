@@ -278,5 +278,51 @@ class TestUAAFPublishingSuite(unittest.TestCase):
         asyncio.run(run_incomplete_checks())
 
 
+    def test_09_existing_upload_id_recheck_and_pending_queue_due(self):
+        """Test pending jobs are picked up when due, and retries re-check existing upload IDs without duplicate uploads."""
+        # Part A: check_due_videos picks up "pending" status items
+        past_time = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
+        mock_schedules = [
+            {"id": "job_pending_due", "title": "Pending Job Due", "status": "pending", "next_retry_at": past_time, "publish_attempts": 1},
+            {"id": "job_pending_not_due", "title": "Pending Future", "status": "pending", "next_retry_at": (datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat(), "publish_attempts": 1},
+        ]
+        with patch.object(local_scheduler, "load_schedule", return_value=mock_schedules):
+            due = local_scheduler.check_due_videos()
+            due_ids = [item["id"] for item in due]
+            self.assertIn("job_pending_due", due_ids, "Pending job with past next_retry_at must be picked up for retry")
+            self.assertNotIn("job_pending_not_due", due_ids)
+
+        # Part B: _publish_x with existing_media_id ready skips media_upload and reuses media_id
+        async def run_x_retry_test():
+            mock_status = MagicMock()
+            mock_status.processing_info = {"state": "succeeded"}
+
+            mock_api = MagicMock()
+            mock_api.get_media_upload_status.return_value = mock_status
+
+            mock_client = MagicMock()
+            mock_client.create_tweet.return_value = MagicMock(data={"id": "tweet_reuse_999"})
+
+            with patch("tweepy.OAuth1UserHandler"), \
+                 patch("tweepy.API", return_value=mock_api), \
+                 patch("tweepy.Client", return_value=mock_client), \
+                 patch.object(Config, "X_API_KEY", "k"), \
+                 patch.object(Config, "X_API_SECRET", "s"), \
+                 patch.object(Config, "X_ACCESS_TOKEN", "t"), \
+                 patch.object(Config, "X_ACCESS_TOKEN_SECRET", "ts"):
+                res = await pub_all._publish_x(self.sample_video, "Reusing media test", existing_media_id="existing_media_777")
+                
+                # Verify existing media_id status was checked
+                mock_api.get_media_upload_status.assert_called_with("existing_media_777")
+                # Verify fresh media_upload was NOT called (zero duplicate upload!)
+                mock_api.media_upload.assert_not_called()
+                # Verify tweet was created with existing_media_777
+                mock_client.create_tweet.assert_called_with(text="Reusing media test", media_ids=["existing_media_777"])
+                self.assertEqual(res["status"], "success")
+                self.assertEqual(res["media_id"], "tweet_reuse_999")
+
+        asyncio.run(run_x_retry_test())
+
+
 if __name__ == "__main__":
     unittest.main()

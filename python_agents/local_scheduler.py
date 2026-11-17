@@ -186,7 +186,7 @@ def check_due_videos():
         status = item.get("status")
 
         # 1. Check retry candidates (failed or partially_published with next_retry_at passed)
-        if status in {"failed", "partially_published"}:
+        if status in {"failed", "partially_published", "pending"}:
             next_retry_at = item.get("next_retry_at")
             if next_retry_at:
                 try:
@@ -379,6 +379,14 @@ async def publish_video_locally(video_data):
             name for name, result in previous.items()
             if result.get("status") in ("failed", "timed_out", "pending")
         ]
+
+        # Extract any existing upload / container / media IDs from previous attempt
+        existing_upload_ids = {
+            platform: res.get("creation_id") or res.get("media_id") or res.get("upload_id") or res.get("publish_id")
+            for platform, res in previous.items()
+            if res.get("creation_id") or res.get("media_id") or res.get("upload_id") or res.get("publish_id")
+        }
+
         results = await publish_to_all(
             video_path=video_path,
             caption=caption,
@@ -388,6 +396,7 @@ async def publish_video_locally(video_data):
             platforms=retry_platforms or None,
             comment_keyword=video_data.get("comment_keyword", "NEXT"),
             video_id=video_data.get("id", ""),
+            existing_upload_ids=existing_upload_ids,
         )
         merged_results = {**previous, **results}
 

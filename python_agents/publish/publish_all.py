@@ -55,6 +55,7 @@ async def publish_to_all(
     comment_keyword: Optional[str] = None,
     video_id: Optional[str] = None,
     youtube_privacy: Optional[str] = None,
+    existing_upload_ids: Optional[Dict[str, str]] = None,
     **kwargs,
 ) -> Dict[str, Dict]:
     """
@@ -89,8 +90,10 @@ async def publish_to_all(
     target_platforms = set(platforms) if platforms else {"instagram", "facebook", "tiktok", "youtube", "x"}
     tasks = []
 
+    existing_ids = existing_upload_ids or kwargs.get("existing_upload_ids") or {}
+
     if "instagram" in target_platforms:
-        tasks.append(("instagram", _publish_instagram(video_path, full_caption, title)))
+        tasks.append(("instagram", _publish_instagram(video_path, full_caption, title, existing_container_id=existing_ids.get("instagram"))))
     if "facebook" in target_platforms:
         tasks.append(("facebook", _publish_facebook(video_path, full_caption, title)))
     if "tiktok" in target_platforms:
@@ -98,7 +101,7 @@ async def publish_to_all(
     if "youtube" in target_platforms:
         tasks.append(("youtube", _publish_youtube(video_path, title, full_caption, hashtags, thumbnail_path, privacy_status=youtube_privacy or kwargs.get("privacy"))))
     if "x" in target_platforms:
-        tasks.append(("x", _publish_x(video_path, full_caption)))
+        tasks.append(("x", _publish_x(video_path, full_caption, existing_media_id=existing_ids.get("x"))))
 
     results: Dict[str, Dict] = {}
 
@@ -220,14 +223,14 @@ async def _upload_to_cdn_fallback(video_path: str) -> Optional[str]:
         log.warn(f"  ⚠️ CDN fallback upload encountered error: {e}")
     return None
 
-async def _publish_instagram(video_source: str, caption: str, title: str) -> Dict:
+async def _publish_instagram(video_source: str, caption: str, title: str, existing_container_id: Optional[str] = None) -> Dict:
     """
     Publish a Reel to Instagram via Meta Graph API.
     Self-healing architecture:
-      1. Attempts direct Meta rupload binary stream.
-      2. If Meta's rupload edge server fails (ProcessingFailedError / 400), automatically
-         falls back to high-speed CDN video_url ingestion with zero disruption.
-      3. Polls status until FINISHED and publishes the container.
+      1. Checks existing_container_id from previous attempt to avoid duplicate uploads.
+      2. Attempts direct Meta rupload binary stream.
+      3. If Meta's rupload edge server fails, automatically falls back to CDN video_url ingestion.
+      4. Polls status until FINISHED and publishes the container.
     """
     log.info("  📸 Instagram: starting Reel publication...")
 
@@ -238,7 +241,22 @@ async def _publish_instagram(video_source: str, caption: str, title: str) -> Dic
     is_local_file = os.path.exists(video_source)
     creation_id = None
 
-    if is_local_file:
+    # Check existing container ID from previous attempt to prevent duplicate uploads
+    if existing_container_id:
+        log.info(f"  Instagram: checking status of existing container {existing_container_id}...")
+        try:
+            status_resp = await _meta_get(
+                f"{base}/{existing_container_id}",
+                {"fields": "status,status_code", "access_token": token}
+            )
+            code = str(status_resp.get("status_code", status_resp.get("status", ""))).upper()
+            if code in ("FINISHED", "IN_PROGRESS", "RUNNING"):
+                log.info(f"  Instagram: reusing existing container {existing_container_id} (status: {code})")
+                creation_id = existing_container_id
+        except Exception as e:
+            log.warn(f"  Instagram: checking existing container failed ({e}), starting fresh upload...")
+
+    if is_local_file and not creation_id:
         file_size = os.path.getsize(video_source)
         log.info(f"  Instagram: using Direct Resumable Upload ({file_size / 1024 / 1024:.1f} MB)...")
 
@@ -299,7 +317,7 @@ async def _publish_instagram(video_source: str, caption: str, title: str) -> Dic
             creation_id = container_resp["id"]
             log.info(f"  Instagram: container created via CDN video_url (ID: {creation_id})")
 
-    else:
+    elif not creation_id:
         # Direct public cloud URL passed
         log.info("  Instagram: creating media container via public video URL...")
         container_resp = await _meta_post(
@@ -883,13 +901,14 @@ async def _publish_youtube(
 # 5. X.COM (Twitter API v2)
 # ═══════════════════════════════════════════════════════════════
 
-async def _publish_x(video_path: str, caption: str) -> Dict:
+async def _publish_x(video_path: str, caption: str, existing_media_id: Optional[str] = None) -> Dict:
     """
     Publish to X.com (Twitter) via API v2.
 
     Flow:
-      1. Upload media (chunked upload via v1.1 media/upload)
-      2. Create tweet with media reference (v2 tweets)
+      1. If existing_media_id is provided, check its processing state first to avoid duplicate uploads.
+      2. Upload media (chunked upload via v1.1 media/upload) if not already ready.
+      3. Create tweet with media reference (v2 tweets).
 
     Requires:
       - X_BEARER_TOKEN or OAuth 1.0a credentials
@@ -911,35 +930,64 @@ async def _publish_x(video_path: str, caption: str) -> Dict:
     )
     api = tweepy.API(auth, wait_on_rate_limit=True)
 
-    # ── Step 1: Upload media ──
-    file_size = os.path.getsize(video_path)
-    log.info(f"  X.com: uploading media ({file_size / 1024 / 1024:.1f} MB)...")
-
-    # Use chunked upload for large videos
-    media = api.media_upload(filename=video_path, media_category="tweet_video")
-
-    # Wait for processing
-    log.info("  X.com: waiting for media processing...")
     media_ready = False
-    for attempt in range(30):
-        await asyncio.sleep(5)
-        status = api.get_media_upload_status(media.media_id_string)
-        info = getattr(status, "processing_info", None)
-        if not info or info.get("state") == "succeeded":
-            media_ready = True
-            break
-        elif info.get("state") == "failed":
-            raise RuntimeError(f"X.com media processing failed: {info}")
-        log.info(f"  X.com: processing state: {info.get('state')} (attempt {attempt + 1}/30)")
+    target_media_id = None
 
+    # Check existing media_id from previous attempt to avoid duplicate upload
+    if existing_media_id:
+        log.info(f"  X.com: checking status of existing media_id: {existing_media_id}...")
+        try:
+            status = api.get_media_upload_status(existing_media_id)
+            info = getattr(status, "processing_info", None)
+            if not info or info.get("state") == "succeeded":
+                log.info(f"  X.com: existing media_id {existing_media_id} is ready! Proceeding to tweet creation...")
+                media_ready = True
+                target_media_id = existing_media_id
+            elif info.get("state") == "in_progress":
+                log.info(f"  X.com: existing media_id {existing_media_id} is still in_progress, polling...")
+                for attempt in range(15):
+                    await asyncio.sleep(5)
+                    status = api.get_media_upload_status(existing_media_id)
+                    info = getattr(status, "processing_info", None)
+                    if not info or info.get("state") == "succeeded":
+                        media_ready = True
+                        target_media_id = existing_media_id
+                        break
+                    elif info.get("state") == "failed":
+                        break
+        except Exception as e:
+            log.warn(f"  X.com: existing media_id check failed ({e}), starting fresh upload...")
+
+    # ── Step 1: Upload media if not already ready ──
     if not media_ready:
-        log.warn("  X.com: media processing timed out after 30 checks")
-        return {
-            "status": "timed_out",
-            "platform": "x",
-            "media_id": media.media_id_string,
-            "error": "Media upload timed out: processing remained in pending state on X.com after 30 checks. Tweet creation aborted.",
-        }
+        file_size = os.path.getsize(video_path)
+        log.info(f"  X.com: uploading media ({file_size / 1024 / 1024:.1f} MB)...")
+
+        # Use chunked upload for large videos
+        media = api.media_upload(filename=video_path, media_category="tweet_video")
+        target_media_id = media.media_id_string
+
+        # Wait for processing
+        log.info("  X.com: waiting for media processing...")
+        for attempt in range(30):
+            await asyncio.sleep(5)
+            status = api.get_media_upload_status(target_media_id)
+            info = getattr(status, "processing_info", None)
+            if not info or info.get("state") == "succeeded":
+                media_ready = True
+                break
+            elif info.get("state") == "failed":
+                raise RuntimeError(f"X.com media processing failed: {info}")
+            log.info(f"  X.com: processing state: {info.get('state')} (attempt {attempt + 1}/30)")
+
+        if not media_ready:
+            log.warn("  X.com: media processing timed out after 30 checks")
+            return {
+                "status": "timed_out",
+                "platform": "x",
+                "media_id": target_media_id,
+                "error": "Media upload timed out: processing remained in pending state on X.com after 30 checks. Tweet creation aborted.",
+            }
 
     # ── Step 2: Create tweet with video ──
     # X.com caption limit: 280 chars
@@ -956,7 +1004,7 @@ async def _publish_x(video_path: str, caption: str) -> Dict:
 
     tweet = client.create_tweet(
         text=tweet_text,
-        media_ids=[media.media_id_string],
+        media_ids=[target_media_id],
     )
 
     tweet_id = tweet.data["id"]
