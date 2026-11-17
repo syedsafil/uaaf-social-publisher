@@ -138,5 +138,60 @@ class TestUAAFPublishingSuite(unittest.TestCase):
             self.assertNotIn("job_done", due_ids)
 
 
+    def test_07_mixed_result_partial_publishing_and_retry(self):
+        """Test mixed result sets job status partially_published with retry, and retries ONLY failed platforms."""
+        async def run_mixed():
+            video_data = {
+                "id": "vid_mixed_123",
+                "title": "Mixed Result Test",
+                "caption": "Testing partial fail and targeted retry",
+                "hashtags": ["#test"],
+                "video_path": self.sample_video,
+                "status": "scheduled",
+            }
+
+            # Attempt 1: YouTube succeeds, Facebook fails
+            mock_attempt_1 = {
+                "youtube": {"status": "success", "url": "https://youtube.com/shorts/test123"},
+                "facebook": {"status": "failed", "error": "Rate limit exceeded"}
+            }
+
+            with patch.object(Config, "YOUTUBE_REFRESH_TOKEN", "valid_token"), \
+                 patch.object(Config, "META_ACCESS_TOKEN", "valid_token"), \
+                 patch("publish.publish_all.publish_to_all", return_value=mock_attempt_1):
+                res1 = await local_scheduler.publish_video_locally(video_data)
+                
+                # Verify Job Status is partially_published
+                self.assertEqual(video_data["status"], "partially_published")
+                self.assertEqual(video_data["failed_platforms"], ["facebook"])
+                self.assertIn("next_retry_at", video_data)
+                self.assertEqual(video_data["publish_attempts"], 1)
+
+            # Attempt 2 (Retry): Should only target failed platform (Facebook), NOT YouTube
+            attempted_platforms = []
+
+            async def mock_retry_publish(*args, **kwargs):
+                attempted_platforms.extend(kwargs.get("platforms") or [])
+                return {"facebook": {"status": "success", "url": "https://facebook.com/reel/test456"}}
+
+            with patch.object(Config, "YOUTUBE_REFRESH_TOKEN", "valid_token"), \
+                 patch.object(Config, "META_ACCESS_TOKEN", "valid_token"), \
+                 patch("publish.publish_all.publish_to_all", side_effect=mock_retry_publish):
+                res2 = await local_scheduler.publish_video_locally(video_data)
+
+                # Verify only the failed platform was retried
+                self.assertEqual(attempted_platforms, ["facebook"], "Retry must only target failed platforms")
+
+                # Verify Job Status is now fully published
+                self.assertEqual(video_data["status"], "published")
+                self.assertNotIn("failed_platforms", video_data)
+                self.assertNotIn("next_retry_at", video_data)
+                self.assertEqual(video_data["publish_attempts"], 2)
+                self.assertEqual(video_data["published_platforms"]["youtube"]["status"], "success")
+                self.assertEqual(video_data["published_platforms"]["facebook"]["status"], "success")
+
+        asyncio.run(run_mixed())
+
+
 if __name__ == "__main__":
     unittest.main()

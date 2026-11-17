@@ -388,7 +388,7 @@ async def publish_video_locally(video_data):
         )
         merged_results = {**previous, **results}
         failed = [name for name, result in merged_results.items() if result.get("status") == "failed"]
-        succeeded = [name for name, result in merged_results.items() if result.get("status") == "success"]
+        succeeded = [name for name, result in merged_results.items() if result.get("status") in ("success", "uploaded_to_inbox")]
         skipped = [name for name, result in merged_results.items() if result.get("status") == "skipped"]
 
         video_data["published_at"] = datetime.now(timezone.utc).isoformat()
@@ -411,7 +411,13 @@ async def publish_video_locally(video_data):
         elif failed and succeeded:
             video_data["status"] = "partially_published"
             video_data["failed_platforms"] = failed
-            log.warn(f"⚠️ Partially published: {succeeded} succeeded, {failed} failed")
+            if video_data["publish_attempts"] < 3:
+                retry_time = (datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat()
+                video_data["next_retry_at"] = retry_time
+                log.warn(f"⚠️ Partially published: {succeeded} succeeded, {failed} failed. Scheduled retry at {retry_time} (attempt {video_data['publish_attempts']}/3)")
+            else:
+                video_data.pop("next_retry_at", None)
+                log.error(f"⚠️ Max attempts reached for partial publish. Remaining failed: {failed}")
         elif succeeded:
             video_data["status"] = "published"
             video_data.pop("failed_platforms", None)
