@@ -193,5 +193,90 @@ class TestUAAFPublishingSuite(unittest.TestCase):
         asyncio.run(run_mixed())
 
 
+    def test_08_incomplete_result_reporting_isolation(self):
+        """Test scheduler marks job partially_published (never published) when channels are pending, timed_out, or inbox-staged."""
+        async def run_incomplete_checks():
+            # Scenario A: YouTube success, TikTok uploaded_to_inbox -> MUST BE partially_published, NOT published
+            vid_inbox = {
+                "id": "vid_inbox_test",
+                "title": "Inbox Test",
+                "caption": "Cap",
+                "hashtags": [],
+                "video_path": self.sample_video,
+                "status": "scheduled",
+            }
+            mock_inbox = {
+                "youtube": {"status": "success", "url": "https://youtube.com/shorts/live1"},
+                "tiktok": {"status": "uploaded_to_inbox", "inbox": True}
+            }
+            with patch.object(Config, "YOUTUBE_REFRESH_TOKEN", "tok"), \
+                 patch.object(Config, "TIKTOK_ACCESS_TOKEN", "tok"), \
+                 patch("publish.publish_all.publish_to_all", return_value=mock_inbox):
+                await local_scheduler.publish_video_locally(vid_inbox)
+                self.assertEqual(vid_inbox["status"], "partially_published", "Success + Inbox must be partially_published, NOT published")
+                self.assertEqual(vid_inbox["inbox_platforms"], ["tiktok"])
+                self.assertEqual(vid_inbox["live_platforms"], ["youtube"])
+
+            # Scenario B: YouTube success, X timed_out -> MUST BE partially_published with retry scheduled
+            vid_timeout = {
+                "id": "vid_timeout_test",
+                "title": "Timeout Test",
+                "caption": "Cap",
+                "hashtags": [],
+                "video_path": self.sample_video,
+                "status": "scheduled",
+            }
+            mock_timeout = {
+                "youtube": {"status": "success", "url": "https://youtube.com/shorts/live2"},
+                "x": {"status": "timed_out", "error": "Media upload timed out"}
+            }
+            with patch.object(Config, "YOUTUBE_REFRESH_TOKEN", "tok"), \
+                 patch.object(Config, "X_API_KEY", "key"), \
+                 patch("publish.publish_all.publish_to_all", return_value=mock_timeout):
+                await local_scheduler.publish_video_locally(vid_timeout)
+                self.assertEqual(vid_timeout["status"], "partially_published", "Success + Timed_out must be partially_published")
+                self.assertIn("x", vid_timeout["failed_platforms"])
+                self.assertIn("next_retry_at", vid_timeout)
+
+            # Scenario C: YouTube success, Instagram pending -> MUST BE partially_published
+            vid_pending = {
+                "id": "vid_pending_test",
+                "title": "Pending Test",
+                "caption": "Cap",
+                "hashtags": [],
+                "video_path": self.sample_video,
+                "status": "scheduled",
+            }
+            mock_pending = {
+                "youtube": {"status": "success", "url": "https://youtube.com/shorts/live3"},
+                "instagram": {"status": "pending"}
+            }
+            with patch.object(Config, "YOUTUBE_REFRESH_TOKEN", "tok"), \
+                 patch.object(Config, "META_ACCESS_TOKEN", "tok"), \
+                 patch("publish.publish_all.publish_to_all", return_value=mock_pending):
+                await local_scheduler.publish_video_locally(vid_pending)
+                self.assertEqual(vid_pending["status"], "partially_published", "Success + Pending must be partially_published")
+                self.assertEqual(vid_pending["pending_platforms"], ["instagram"])
+
+            # Scenario D: TikTok alone uploaded_to_inbox -> MUST BE uploaded_to_inbox, NOT published
+            vid_solo_inbox = {
+                "id": "vid_solo_inbox_test",
+                "title": "Solo Inbox Test",
+                "caption": "Cap",
+                "hashtags": [],
+                "video_path": self.sample_video,
+                "status": "scheduled",
+            }
+            mock_solo = {
+                "tiktok": {"status": "uploaded_to_inbox", "inbox": True}
+            }
+            with patch.object(Config, "TIKTOK_ACCESS_TOKEN", "tok"), \
+                 patch("publish.publish_all.publish_to_all", return_value=mock_solo):
+                await local_scheduler.publish_video_locally(vid_solo_inbox)
+                self.assertEqual(vid_solo_inbox["status"], "uploaded_to_inbox", "Solo inbox must report uploaded_to_inbox, NOT published")
+
+        asyncio.run(run_incomplete_checks())
+
+
 if __name__ == "__main__":
     unittest.main()

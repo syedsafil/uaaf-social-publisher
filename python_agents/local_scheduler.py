@@ -375,7 +375,10 @@ async def publish_video_locally(video_data):
     try:
         from publish.publish_all import publish_to_all
         previous = video_data.get("published_platforms", {})
-        retry_platforms = [name for name, result in previous.items() if result.get("status") == "failed"]
+        retry_platforms = [
+            name for name, result in previous.items()
+            if result.get("status") in ("failed", "timed_out", "pending")
+        ]
         results = await publish_to_all(
             video_path=video_path,
             caption=caption,
@@ -387,42 +390,83 @@ async def publish_video_locally(video_data):
             video_id=video_data.get("id", ""),
         )
         merged_results = {**previous, **results}
-        failed = [name for name, result in merged_results.items() if result.get("status") == "failed"]
-        succeeded = [name for name, result in merged_results.items() if result.get("status") in ("success", "uploaded_to_inbox")]
-        skipped = [name for name, result in merged_results.items() if result.get("status") == "skipped"]
+
+        # Categorize platform statuses accurately
+        succeeded = [name for name, r in merged_results.items() if r.get("status") == "success"]
+        inbox_staged = [name for name, r in merged_results.items() if r.get("status") == "uploaded_to_inbox"]
+        pending = [name for name, r in merged_results.items() if r.get("status") == "pending"]
+        timed_out = [name for name, r in merged_results.items() if r.get("status") == "timed_out"]
+        failed = [name for name, r in merged_results.items() if r.get("status") == "failed"]
+        skipped = [name for name, r in merged_results.items() if r.get("status") == "skipped"]
+
+        unresolved = failed + timed_out
 
         video_data["published_at"] = datetime.now(timezone.utc).isoformat()
         video_data["published_platforms"] = merged_results
         video_data["skipped_platforms"] = skipped
         video_data["publish_attempts"] = int(video_data.get("publish_attempts", 0)) + 1
 
-        # Determine status based on actual platform results
-        if failed and not succeeded:
-            video_data["status"] = "failed"
-            video_data["failed_platforms"] = failed
+        # Determine job status based on comprehensive platform outcomes
+        if unresolved:
+            video_data["failed_platforms"] = unresolved
+            if succeeded or inbox_staged:
+                video_data["status"] = "partially_published"
+                if video_data["publish_attempts"] < 3:
+                    retry_time = (datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat()
+                    video_data["next_retry_at"] = retry_time
+                    log.warn(f"⚠️ Partially published: live={succeeded}, inbox={inbox_staged}, unresolved={unresolved}. Scheduled retry at {retry_time} (attempt {video_data['publish_attempts']}/3)")
+                else:
+                    video_data.pop("next_retry_at", None)
+                    log.error(f"⚠️ Max attempts reached for partial publish. Remaining unresolved: {unresolved}")
+            else:
+                video_data["status"] = "failed"
+                if video_data["publish_attempts"] < 3:
+                    retry_time = (datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat()
+                    video_data["next_retry_at"] = retry_time
+                    log.warn(f"❌ Publication failed for: {unresolved}. Scheduled retry at {retry_time} (attempt {video_data['publish_attempts']}/3)")
+                else:
+                    video_data["status"] = "permanently_failed"
+                    video_data.pop("next_retry_at", None)
+                    log.error(f"❌ Max attempts reached for: {unresolved}. Marked as permanently_failed.")
+        elif pending:
+            video_data["pending_platforms"] = pending
+            if succeeded or inbox_staged:
+                video_data["status"] = "partially_published"
+            else:
+                video_data["status"] = "pending"
             if video_data["publish_attempts"] < 3:
                 retry_time = (datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat()
                 video_data["next_retry_at"] = retry_time
-                log.warn(f"❌ Publication failed for: {failed}. Scheduled retry at {retry_time} (attempt {video_data['publish_attempts']}/3)")
+                log.info(f"⏳ Publication pending for: {pending}. Scheduled re-check at {retry_time}")
             else:
-                video_data["status"] = "permanently_failed"
                 video_data.pop("next_retry_at", None)
-                log.error(f"❌ Max attempts reached for: {failed}. Marked as permanently_failed.")
-        elif failed and succeeded:
+        elif inbox_staged and not succeeded:
+            # Only inbox staged platforms were targeted
+            video_data["status"] = "uploaded_to_inbox"
+            video_data["inbox_platforms"] = inbox_staged
+            video_data.pop("failed_platforms", None)
+            video_data.pop("next_retry_at", None)
+            video_data.pop("pending_platforms", None)
+            log.info(f"📥 Video uploaded to Creator Inbox on: {inbox_staged}")
+        elif inbox_staged and succeeded:
+            # Mixed: some live on feed, some in creator inbox
             video_data["status"] = "partially_published"
-            video_data["failed_platforms"] = failed
-            if video_data["publish_attempts"] < 3:
-                retry_time = (datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat()
-                video_data["next_retry_at"] = retry_time
-                log.warn(f"⚠️ Partially published: {succeeded} succeeded, {failed} failed. Scheduled retry at {retry_time} (attempt {video_data['publish_attempts']}/3)")
-            else:
-                video_data.pop("next_retry_at", None)
-                log.error(f"⚠️ Max attempts reached for partial publish. Remaining failed: {failed}")
+            video_data["inbox_platforms"] = inbox_staged
+            video_data["live_platforms"] = succeeded
+            video_data.pop("failed_platforms", None)
+            video_data.pop("next_retry_at", None)
+            video_data.pop("pending_platforms", None)
+            log.info(f"⚠️ Mixed publication: {succeeded} live on feed, {inbox_staged} staged in Creator Inbox")
         elif succeeded:
+            # All attempted channels succeeded live
             video_data["status"] = "published"
             video_data.pop("failed_platforms", None)
             video_data.pop("next_retry_at", None)
-            log.info(f"✅ Successfully published on all platforms: {succeeded}")
+            video_data.pop("pending_platforms", None)
+            video_data.pop("inbox_platforms", None)
+            log.info(f"✅ Successfully published live on all platforms: {succeeded}")
+        elif skipped:
+            video_data["status"] = "skipped"
         else:
             video_data["status"] = "failed"
             video_data["failed_platforms"] = ["unknown"]
